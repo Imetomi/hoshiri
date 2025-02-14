@@ -1,0 +1,9 @@
+{
+  "modules": [
+    {
+      "name": "demo_module",
+      "description": "Dynamically generated module",
+      "file_path": "hoshiri/modules/demo_module.py"
+    }
+  ]
+}

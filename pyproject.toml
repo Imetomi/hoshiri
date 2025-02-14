@@ -1,0 +1,30 @@
+[tool.poetry]
+name = "hoshiri"
+version = "0.1.0"
+description = "AI Terminal Assistant"
+packages = [{include = "hoshiri"}]  # Add this line
+
+[project]
+name = "hoshiri"
+version = "0.1.0"
+description = "An AI assistant that runs in a terminal and writes itself"
+authors = [
+    {name = "Imetomi",email = "imetstamas@gmail.com"}
+]
+
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic (>=0.45.2,<0.46.0)",
+    "python-dotenv (>=1.0.1,<2.0.0)",
+    "requests (>=2.32.3,<3.0.0)",
+    "openai (>=1.61.1,<2.0.0)",
+    "rich (>=13.9.4,<14.0.0)",
+    "watchdog (>=6.0.0,<7.0.0)",
+    "setuptools (>=75.8.0,<76.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
