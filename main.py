@@ -1,53 +1,28 @@
-import os, sys, json, time, threading, readline, base64, mimetypes
+import os
 from dotenv import load_dotenv
 import anthropic
 from datetime import datetime
-from typing import List, Dict, Optional
+import textwrap
+import sys
+from typing import List, Dict
+import json
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.theme import Theme
 from rich.prompt import Prompt
 from rich.live import Live
+from rich.spinner import Spinner
+import base64
 from pathlib import Path
-
-
-class ModuleGenerator:
-    def __init__(self, client: anthropic.Anthropic, console: Console):
-        self.client = client
-        self.console = console
-        self.modules_dir = Path("modules")
-        self.modules_dir.mkdir(exist_ok=True)
-
-    def generate_module(self, specs: dict) -> Path:
-        module_name = specs["module_type"]
-        module_path = self.modules_dir / f"{module_name}.py"
-
-        code = self.get_code_from_claude(specs)
-
-        with open(module_path, "w") as f:
-            f.write(code)
-
-        return module_path
-
-    def get_code_from_claude(self, specs: dict) -> str:
-        prompt = f"""Generate a Python module for: {specs['description']}
-Requirements: {specs['requirements']}
-Credentials needed: {specs['credentials_needed']}
-Generate complete, production-ready code."""
-
-        response = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
-        )
-
-        return response.content[0].text
+import mimetypes
+import readline
+import time
+import threading
 
 
 class HoshiriChat:
     def __init__(self):
         load_dotenv()
-        self.setup_directories()
 
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -58,7 +33,13 @@ class HoshiriChat:
         self.conversation_history: List[Dict] = []
         self.max_width = 100
         self.command_history = []
+        self.spinner = Spinner("dots", text="Thinking")
         self.is_processing = False
+
+        # Initialize readline for history
+        readline.parse_and_bind('"\e[A": history-search-backward')
+        readline.parse_and_bind('"\e[B": history-search-forward')
+        readline.parse_and_bind('"\C-r": reverse-search-history')
 
         self.theme = Theme(
             {
@@ -71,57 +52,97 @@ class HoshiriChat:
         )
         self.console = Console(theme=self.theme, width=self.max_width)
 
-        self.capabilities = self.load_capabilities()
-        self.module_generator = ModuleGenerator(self.client, self.console)
-
         self.uploads_dir = Path("uploads")
         self.uploads_dir.mkdir(exist_ok=True)
         self.current_files = []
 
-        self.system_prompt = self.generate_system_prompt()
+        self.system_prompt = """You are Hoshiri, an AI assistant based on Claude 3.5 Sonnet. 
+You should maintain this identity throughout the conversation while keeping all of Claude's 
+capabilities and ethical principles. When referring to yourself, use the name Hoshiri. 
+Use Markdown formatting in your responses when appropriate:
+- Use **bold** for emphasis
+- Use `code` for code snippets
+- Use bullet points and numbered lists where appropriate
+- Use headings with # when organizing information
+- Use ```language code blocks for longer code examples"""
 
-    def setup_directories(self):
-        for dir_name in ["modules", "configs", "uploads"]:
-            Path(dir_name).mkdir(exist_ok=True)
+    def get_file_type(self, file_path: Path, mime_type: str) -> tuple:
+        """Determine the appropriate file type and media type for the API."""
+        extension = file_path.suffix.lower()
 
-    def load_capabilities(self) -> dict:
-        cap_file = Path("configs/capabilities.json")
-        if not cap_file.exists():
-            capabilities = {"modules": {}}
-            self.save_capabilities(capabilities)
-            return capabilities
-        return json.load(open(cap_file))
+        if mime_type.startswith("image/"):
+            return "image", mime_type
 
-    def save_capabilities(self, capabilities: dict):
-        with open("configs/capabilities.json", "w") as f:
-            json.dump(capabilities, f, indent=2)
+        code_extensions = {
+            ".py",
+            ".js",
+            ".java",
+            ".cpp",
+            ".h",
+            ".cs",
+            ".rb",
+            ".php",
+            ".html",
+            ".css",
+            ".sql",
+        }
+        if extension in code_extensions:
+            return "text", "text/plain"
 
-    def generate_system_prompt(self) -> str:
-        return f"""You are Hoshiri, an AI assistant based on Claude 3.5 Sonnet.
-Current capabilities: {json.dumps(self.capabilities, indent=2)}
+        text_extensions = {".txt", ".md", ".csv", ".json", ".yaml", ".xml", ".log"}
+        if extension in text_extensions:
+            return "text", "text/plain"
 
-For each request, analyze if it requires new capabilities:
-If yes, respond with JSON:
-{{
-    "needs_module": true,
-    "module_type": "type_name",
-    "requirements": ["req1", "req2"],
-    "credentials_needed": ["cred1", "cred2"],
-    "description": "Module purpose"
-}}
-If no, respond normally in chat.
-Use markdown formatting appropriately."""
+        document_extensions = {
+            ".pdf",
+            ".doc",
+            ".docx",
+            ".ppt",
+            ".pptx",
+            ".xls",
+            ".xlsx",
+        }
+        if extension in document_extensions:
+            return "document", (
+                "application/pdf" if extension == ".pdf" else "application/octet-stream"
+            )
 
-    def animate_loading(self):
-        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        i = 0
-        with Live("", refresh_per_second=10) as live:
-            while self.is_processing:
-                live.update(f"[cyan]{frames[i]} Thinking...[/cyan]")
-                i = (i + 1) % len(frames)
-                time.sleep(0.1)
+        return "text", "text/plain"
+
+    def prepare_file_message(self, file_path: Path) -> dict:
+        """Prepare a file for sending to Claude API."""
+        mime_type, _ = mimetypes.guess_type(str(file_path))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        api_type, media_type = self.get_file_type(file_path, mime_type)
+
+        with open(file_path, "rb") as f:
+            content = f.read()
+
+        if api_type == "text":
+            return {"type": "text", "text": content.decode("utf-8")}
+        else:
+            return {
+                "type": api_type,
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": base64.b64encode(content).decode(),
+                },
+            }
+
+    def save_conversation(self):
+        """Save the conversation history to a JSON file."""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"hoshiri_chat_{timestamp}.json"
+
+        with open(filename, "w") as f:
+            json.dump(self.conversation_history, f, indent=2)
+        self.console.print(f"\n[system]Conversation saved to {filename}[/system]")
 
     def get_input_with_history(self, prompt: str) -> str:
+        """Get user input with command history support."""
         try:
             if self.command_history:
                 readline.clear_history()
@@ -134,70 +155,27 @@ Use markdown formatting appropriately."""
         except (EOFError, KeyboardInterrupt):
             return "exit"
 
-    def process_response(self, response_text: str) -> Optional[dict]:
-        try:
-            if response_text.startswith("{"):
-                specs = json.loads(response_text)
-                if specs.get("needs_module"):
-                    return specs
-        except json.JSONDecodeError:
-            pass
-        return None
-
-    def handle_new_module(self, specs: dict):
-        try:
-            module_path = self.module_generator.generate_module(specs)
-
-            self.capabilities["modules"][specs["module_type"]] = {
-                "path": str(module_path),
-                "requirements": specs["requirements"],
-                "credentials": specs["credentials_needed"],
-            }
-            self.save_capabilities(self.capabilities)
-
-            self.system_prompt = self.generate_system_prompt()
-
-            self.console.print(
-                f"\n[system]Created new module: {specs['module_type']}[/system]"
-            )
-
-            config = {}
-            for cred in specs["credentials_needed"]:
-                config[cred] = Prompt.ask(f"Enter {cred}")
-
-            config_path = Path("configs") / f"{specs['module_type']}_config.json"
-            with open(config_path, "w") as f:
-                json.dump(config, f, indent=2)
-
-        except Exception as e:
-            self.console.print(f"[error]Failed to create module: {str(e)}[/error]")
-
-    def prepare_file_message(self, file_path: Path) -> dict:
-        mime_type = (
-            mimetypes.guess_type(str(file_path))[0] or "application/octet-stream"
-        )
-        with open(file_path, "rb") as f:
-            content = f.read()
-            if mime_type.startswith(("text/", "application/")):
-                return {"type": "text", "text": content.decode()}
-            return {
-                "type": "file",
-                "source": {
-                    "type": "base64",
-                    "media_type": mime_type,
-                    "data": base64.b64encode(content).decode(),
-                },
-            }
+    def animate_loading(self):
+        """Display loading animation while processing."""
+        with Live(self.spinner, refresh_per_second=10) as live:
+            while self.is_processing:
+                live.update(self.spinner)
+                time.sleep(0.1)
 
     def run(self):
+        """Run the chat interface."""
         self.console.print("\n[system]Welcome to Hoshiri Chat![/system]")
-        self.console.print("[system]Commands: exit, save, upload, clear[/system]")
-        self.console.print("[system]Use ↑/↓ arrows for history[/system]")
+        self.console.print("[system]Commands:[/system]")
+        self.console.print("[system]- Type 'exit' to end the conversation[/system]")
+        self.console.print("[system]- Type 'save' to save the chat history[/system]")
+        self.console.print("[system]- Type 'upload' to upload a file[/system]")
+        self.console.print("[system]- Type 'clear' to clear current files[/system]")
+        self.console.print("[system]- Use ↑/↓ arrows for command history[/system]")
         self.console.print("=" * self.max_width + "\n")
 
         while True:
             if self.current_files:
-                self.console.print("\n[file]Attached files:[/file]")
+                self.console.print("\n[file]Currently attached files:[/file]")
                 for file in self.current_files:
                     self.console.print(f"[file]- {file.name}[/file]")
                 self.console.print()
@@ -205,40 +183,45 @@ Use markdown formatting appropriately."""
             user_input = self.get_input_with_history("🧑 You: ")
 
             if user_input.lower() == "exit":
-                self.console.print("\n[system]Goodbye![/system]")
+                self.console.print("\n[system]Goodbye! Thanks for chatting![/system]")
                 break
 
             if user_input.lower() == "save":
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                with open(f"hoshiri_chat_{timestamp}.json", "w") as f:
-                    json.dump(self.conversation_history, f, indent=2)
-                self.console.print(
-                    f"\n[system]Chat saved: hoshiri_chat_{timestamp}.json[/system]"
-                )
+                self.save_conversation()
                 continue
 
             if user_input.lower() == "clear":
                 self.current_files = []
-                self.console.print("\n[system]Files cleared[/system]")
+                self.console.print("\n[system]Cleared all attached files[/system]")
                 continue
 
             if user_input.lower() == "upload":
-                file_path = Path(Prompt.ask("[system]File path[/system]"))
+                file_path = Prompt.ask("[system]Enter the path to your file[/system]")
+                file_path = Path(file_path)
                 if file_path.exists():
                     target_path = self.uploads_dir / file_path.name
                     with open(file_path, "rb") as src, open(target_path, "wb") as dst:
                         dst.write(src.read())
                     self.current_files.append(target_path)
-                    self.console.print(f"[system]Uploaded: {file_path.name}[/system]")
+                    self.console.print(
+                        f"[system]File uploaded: {file_path.name}[/system]"
+                    )
                 else:
                     self.console.print("[error]File not found[/error]")
                 continue
 
             try:
-                message_content = [{"type": "text", "text": user_input}]
                 if self.current_files:
+                    message_content = [
+                        {
+                            "type": "text",
+                            "text": user_input or "Please analyze the attached files",
+                        }
+                    ]
                     for file_path in self.current_files:
                         message_content.append(self.prepare_file_message(file_path))
+                else:
+                    message_content = [{"type": "text", "text": user_input}]
 
                 self.conversation_history.append(
                     {
@@ -248,6 +231,7 @@ Use markdown formatting appropriately."""
                     }
                 )
 
+                # Start animation in a separate thread
                 self.is_processing = True
                 animation_thread = threading.Thread(target=self.animate_loading)
                 animation_thread.start()
@@ -262,16 +246,13 @@ Use markdown formatting appropriately."""
                         system=self.system_prompt,
                         max_tokens=4096,
                     )
+
                 finally:
+                    # Stop animation
                     self.is_processing = False
                     animation_thread.join()
 
                 assistant_message = response.content[0].text
-
-                module_specs = self.process_response(assistant_message)
-                if module_specs:
-                    self.handle_new_module(module_specs)
-                    continue
 
                 self.conversation_history.append(
                     {
@@ -289,6 +270,7 @@ Use markdown formatting appropriately."""
             except Exception as e:
                 self.is_processing = False
                 self.console.print(f"\n[error]❌ Error: {str(e)}[/error]\n")
+                continue
 
 
 def main():

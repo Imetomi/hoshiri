@@ -1,5 +1,3 @@
-**Project Specification: Hoshiri Terminal Applet**
-
 ## Overview
 Hoshiri is a highly flexible terminal-based Python applet that dynamically expands its capabilities by generating and executing scripts based on user input. It is designed to analyze commands, determine necessary actions, and either execute them directly or generate new scripts/modules to handle the task. Additionally, it integrates Anthropic AI to process natural language queries and respond in plain language.
 
